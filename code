@@ -1,0 +1,654 @@
+
+// Define an array of structures to hold the pin assignments for each motor driver
+struct MotorDriver {
+  int standbyPin;
+  int pwmaPin;
+  int ain1Pin;
+  int ain2Pin;
+  int pwmbPin;
+  int bin1Pin;
+  int bin2Pin;
+};
+
+//FSRs 
+const int FSR1 = A2;
+const int FSR2 = A5;
+const int FSR3 = A13;
+const int FSR4 = A8;
+
+// EMG input pins 
+const int EMG_BIT0 = 41;
+const int EMG_BIT1 = 40;
+const int EMG_BIT2 = 34;
+
+//EMG value, combination of all input pins
+int EMG_value;
+int past_EMG_value = 0;
+
+// times for fingers and thumb to close
+unsigned long elapsedTime_finger1 = 0;
+unsigned long elapsedTime_finger2 = 0;
+unsigned long elapsedTime_finger3 = 0;
+unsigned long elapsedTime_thumb = 0;
+
+const MotorDriver motorDrivers[] = {
+  // Motor driver 1
+  {10, 8, 53, 9, 13, 11, 12},
+  // Motor driver 2
+  {3, 4, 2, 5, 7, 16, 6},
+  // Motor driver 3
+  {20, 0, 0, 0, 44, 42, 43}
+};
+
+void setup() {
+  // Iterate over each motor driver and initialize its pins as outputs
+  for (int i = 0; i < sizeof(motorDrivers) / sizeof(motorDrivers[0]); i++) {
+    pinMode(motorDrivers[i].standbyPin, OUTPUT);
+    pinMode(motorDrivers[i].pwmaPin, OUTPUT);
+    pinMode(motorDrivers[i].ain1Pin, OUTPUT);
+    pinMode(motorDrivers[i].ain2Pin, OUTPUT);
+    pinMode(motorDrivers[i].pwmbPin, OUTPUT);
+    pinMode(motorDrivers[i].bin1Pin, OUTPUT);
+    pinMode(motorDrivers[i].bin2Pin, OUTPUT);
+  }
+
+  pinMode(EMG_BIT0, INPUT);
+  pinMode(EMG_BIT1, INPUT);
+  pinMode(EMG_BIT2, INPUT); 
+}      
+
+
+void loop() {
+  //reads the values form the EMG input pins
+  // combines the values of input pins to one integer
+  EMG_value = digitalRead(EMG_BIT2) << 2 | digitalRead(EMG_BIT1) << 1 | digitalRead(EMG_BIT0);
+
+  //condition to check if there has been a change in the EMG_value 
+  if (EMG_value != past_EMG_value) {
+      //switch statement to check which function to run
+    switch (EMG_value) {
+      case 0:
+        // do nothing default input
+        break;
+  
+      case 2:
+        // full grip
+        full_grip();
+        break;
+  
+      case 1:
+        // open the hand using the stored time from full grip
+        open_hand();
+        break;
+        
+      case 4:
+      
+        // calibrates thumb
+        calibrate_finger(motorDrivers[2].standbyPin, motorDrivers[2].pwmbPin, motorDrivers[2].bin1Pin, motorDrivers[2].bin2Pin, FSR4,1500,255 );
+        delay(500);
+        digitalWrite(motorDrivers[0].standbyPin, HIGH);
+        move_motor(false, 80, motorDrivers[0].pwmbPin, motorDrivers[0].bin1Pin, motorDrivers[0].bin2Pin);
+        delay(200);
+        stop_motor(motorDrivers[0].pwmbPin);
+        digitalWrite(motorDrivers[0].standbyPin, LOW);
+
+        // calibrates the 3 fingers
+        calibrate_fingers();
+        break;
+  
+      default:
+        // all other numbers currently not in use
+        break;
+
+    }
+  }
+  past_EMG_value = EMG_value;   
+}
+
+
+
+void calibrate_fingers(){
+  
+  const int fsrThreshold = 20; // set FSR threshold
+  int fsrValue1 = 0; // initialize FSR value to 0
+  int fsrValue2 = 0; // initialize FSR value to 0
+  int fsrValue3 = 0; // initialize FSR value to 0
+
+  int counter_finger1 = 0;
+  int counter_finger2 = 0;
+  int counter_finger3 = 0;
+
+  // used to check if finger is in contact with object
+  boolean contact_finger1 = false;
+  boolean contact_finger2 = false;
+  boolean contact_finger3 = false;
+  
+  // used to check if fingers have reached reset position 
+  boolean reset_finger1 = false;
+  boolean reset_finger2 = false;
+  boolean reset_finger3 = false;
+
+  unsigned long start_Time_finger1 = 0; // initialize start time to 0
+  unsigned long start_Time_finger2 = 0; // initialize start time to 0
+  unsigned long start_Time_finger3 = 0; // initialize start time to 0
+
+  unsigned long stop_Time_finger1 = 0; // initialize stop time to 0
+  unsigned long stop_Time_finger2 = 0; // initialize stop time to 0
+  unsigned long stop_Time_finger3 = 0; // initialize stop time to 0
+
+  // the calculated time for each finger
+  unsigned long cal_time_finger1 = 0; 
+  unsigned long cal_time_finger2 = 0; 
+  unsigned long cal_time_finger3 = 0;
+
+  // for the final while loop
+  unsigned long current_time = 0;
+  unsigned long start_time = 0;
+  unsigned long adjusted_time = 0;
+
+  //set standly for each motor driver high 
+  digitalWrite(motorDrivers[1].standbyPin, HIGH);
+  digitalWrite(motorDrivers[0].standbyPin, HIGH);
+
+  move_motor(false, 255, motorDrivers[1].pwmbPin, motorDrivers[1].bin1Pin, motorDrivers[1].bin2Pin);
+  move_motor(false, 255, motorDrivers[1].pwmaPin, motorDrivers[1].ain1Pin, motorDrivers[1].ain2Pin);
+  move_motor(false, 255, motorDrivers[0].pwmaPin, motorDrivers[0].ain1Pin, motorDrivers[0].ain2Pin);
+
+  while ((contact_finger1 == false) or (contact_finger2 == false) or (contact_finger3 == false)) {
+    fsrValue1 = analogRead(FSR1);
+    fsrValue2 = analogRead(FSR2);
+    fsrValue3 = analogRead(FSR3);
+    
+    if (fsrValue3 > fsrThreshold)
+    {
+      stop_motor(motorDrivers[1].pwmbPin);
+      contact_finger1 = true;
+    }
+
+    if (fsrValue2 > fsrThreshold)
+    {
+      stop_motor(motorDrivers[0].pwmaPin);
+      contact_finger2 = true; 
+    }
+
+    if (fsrValue1 > fsrThreshold)
+    {
+      stop_motor(motorDrivers[1].pwmaPin);
+      contact_finger3 = true;     
+    }
+
+  }
+
+  contact_finger1 = false;
+  contact_finger2 = false;
+  contact_finger3 = false;
+
+  move_motor(true, 255, motorDrivers[1].pwmbPin, motorDrivers[1].bin1Pin, motorDrivers[1].bin2Pin);
+  start_Time_finger1 = millis();
+  delay(100);
+  
+  move_motor(true, 255, motorDrivers[1].pwmaPin, motorDrivers[1].ain1Pin, motorDrivers[1].ain2Pin);
+  start_Time_finger3 = millis();
+  delay(100);
+  
+  move_motor(true, 255, motorDrivers[0].pwmaPin, motorDrivers[0].ain1Pin, motorDrivers[0].ain2Pin);
+  start_Time_finger2 = millis();
+  delay(100);
+
+  // delay so FSR doesnt trigger 
+  //delay(800);
+
+  
+  while ((contact_finger1 == false) or (contact_finger2 == false) or (contact_finger3 == false)) {
+    fsrValue1 = analogRead(FSR1);
+    fsrValue2 = analogRead(FSR2);
+    fsrValue3 = analogRead(FSR3);
+    
+    if (fsrValue3 > fsrThreshold)
+    {
+      if (counter_finger1 == 0)
+      {
+        stop_motor(motorDrivers[1].pwmbPin);
+        contact_finger1 = true;
+        counter_finger1 += 1;
+        stop_Time_finger1 = millis(); 
+      }
+    }
+
+    if (fsrValue2 > fsrThreshold)
+    {
+      if (counter_finger2 == 0)
+      {
+        stop_motor(motorDrivers[0].pwmaPin);
+        contact_finger2 = true; 
+        counter_finger2 += 1;
+        stop_Time_finger2 = millis();
+      }
+    }
+
+    if (fsrValue1 > fsrThreshold)
+    {
+      if (counter_finger3 == 0)
+      {
+        stop_motor(motorDrivers[1].pwmaPin);
+        contact_finger3 = true;
+        counter_finger3 += 1;
+        stop_Time_finger3 = millis();
+      } 
+    }
+    delay(100);
+  }
+
+  cal_time_finger1 = ((stop_Time_finger1 - start_Time_finger1)/2) - 1500;
+  cal_time_finger2 = ((stop_Time_finger2 - start_Time_finger2)/2) - 800;
+  cal_time_finger3 = ((stop_Time_finger3 - start_Time_finger3)/2) - 1200;
+
+  // rotate fingers to the calibrated positions
+  move_motor(false, 255, motorDrivers[1].pwmbPin, motorDrivers[1].bin1Pin, motorDrivers[1].bin2Pin);
+  move_motor(false, 255, motorDrivers[1].pwmaPin, motorDrivers[1].ain1Pin, motorDrivers[1].ain2Pin);
+  move_motor(false, 255, motorDrivers[0].pwmaPin, motorDrivers[0].ain1Pin, motorDrivers[0].ain2Pin);
+  start_time = millis();
+
+  while ((reset_finger1 == false) or (reset_finger2 == false) or (reset_finger3 == false)) {
+    current_time = millis();
+    adjusted_time = current_time - start_time;
+    
+    if (adjusted_time > cal_time_finger1)
+    {
+      reset_finger1 = true;
+      stop_motor(motorDrivers[1].pwmbPin);     
+    }
+    if (adjusted_time > cal_time_finger2)
+    {
+      reset_finger2 = true;
+      stop_motor(motorDrivers[0].pwmaPin); 
+    }
+    if (adjusted_time > cal_time_finger3)
+    {
+      reset_finger3 = true;
+      stop_motor(motorDrivers[1].pwmaPin); 
+    }
+  }
+
+  //set standly for each motor driver low 
+  digitalWrite(motorDrivers[1].standbyPin, LOW);
+  digitalWrite(motorDrivers[0].standbyPin, LOW);
+  
+  
+
+}
+
+void open_hand () {
+  //
+  unsigned long start_time = 0;
+  unsigned long current_time = 0;
+  unsigned long adjusted_time = 0;
+  boolean reset_finger1 = false;
+  boolean reset_finger2 = false;
+  boolean reset_finger3 = false;
+  boolean reset_thumb = false;
+
+  //set standly for each motor driver high 
+  digitalWrite(motorDrivers[1].standbyPin, HIGH);
+  digitalWrite(motorDrivers[0].standbyPin, HIGH);
+  digitalWrite(motorDrivers[2].standbyPin, HIGH);
+  
+  //moves the motors back to their original position
+  move_motor(false, 255, motorDrivers[1].pwmbPin, motorDrivers[1].bin1Pin, motorDrivers[1].bin2Pin);
+  move_motor(false, 255, motorDrivers[2].pwmbPin, motorDrivers[2].bin1Pin, motorDrivers[2].bin2Pin);
+  move_motor(false, 255, motorDrivers[1].pwmaPin, motorDrivers[1].ain1Pin, motorDrivers[1].ain2Pin);
+  move_motor(false, 255, motorDrivers[0].pwmaPin, motorDrivers[0].ain1Pin, motorDrivers[0].ain2Pin);
+  start_time = millis();
+
+  while ((reset_finger1 == false) or (reset_finger2 == false) or (reset_finger3 == false) or (reset_thumb == false)) {
+    current_time = millis();
+    adjusted_time = current_time - start_time;
+    
+
+    if (adjusted_time > elapsedTime_finger1)
+    {
+      reset_finger1 = true;
+      stop_motor(motorDrivers[1].pwmbPin);     
+    }
+    if (adjusted_time > elapsedTime_finger2)
+    {
+      reset_finger2 = true;
+      stop_motor(motorDrivers[0].pwmaPin); 
+    }
+    if (adjusted_time > elapsedTime_finger3)
+    {
+      reset_finger3 = true;
+      stop_motor(motorDrivers[1].pwmaPin); 
+    }
+    if (adjusted_time > elapsedTime_thumb)
+    {
+      reset_thumb = true;
+      stop_motor(motorDrivers[2].pwmbPin); 
+    }    
+  }
+  
+
+
+  delay(100);
+  move_motor(false, 80, motorDrivers[0].pwmbPin, motorDrivers[0].bin1Pin, motorDrivers[0].bin2Pin);
+  delay(200);
+  stop_motor(motorDrivers[0].pwmbPin);
+
+  //set standly for each motor driver low 
+  digitalWrite(motorDrivers[1].standbyPin, LOW);
+  digitalWrite(motorDrivers[0].standbyPin, LOW);
+  digitalWrite(motorDrivers[2].standbyPin, LOW);
+}
+
+
+void full_grip () {
+
+  const int fsrThreshold = 50; // set FSR threshold
+  int fsrValue1 = 0; // initialize FSR value to 0
+  int fsrValue2 = 0; // initialize FSR value to 0
+  int fsrValue3 = 0; // initialize FSR value to 0
+  int fsrValue4 = 0; // initialize FSR value to 0
+  
+  int counter_finger1 = 0;
+  int counter_finger2 = 0;
+  int counter_finger3 = 0;
+  int counter_thumb = 0;
+
+  boolean contact_finger1 = false;
+  boolean contact_finger2 = false;
+  boolean contact_finger3 = false;
+  boolean contact_thumb = false;
+  
+  unsigned long start_Time_finger1 = 0; // initialize start time to 0
+  unsigned long start_Time_finger2 = 0; // initialize start time to 0
+  unsigned long start_Time_finger3 = 0; // initialize start time to 0
+  unsigned long start_Time_thumb = 0; // initialize start time to 0
+
+  unsigned long stop_Time_finger1 = 0; // initialize stop time to 0
+  unsigned long stop_Time_finger2 = 0; // initialize stop time to 0
+  unsigned long stop_Time_finger3 = 0; // initialize stop time to 0
+  unsigned long stop_Time_thumb = 0; // initialize stop time to 0
+
+  //set standly for each motor driver high 
+  digitalWrite(motorDrivers[1].standbyPin, HIGH);
+  digitalWrite(motorDrivers[0].standbyPin, HIGH);
+  digitalWrite(motorDrivers[2].standbyPin, HIGH);
+
+  // moves oposable thumb motor to grip position
+  move_motor(true, 80, motorDrivers[0].pwmbPin, motorDrivers[0].bin1Pin, motorDrivers[0].bin2Pin);
+  delay(200);
+  stop_motor(motorDrivers[0].pwmbPin);
+  delay(100);
+
+  //starts movement of all fingers
+  move_motor(true, 255, motorDrivers[2].pwmbPin, motorDrivers[2].bin1Pin, motorDrivers[2].bin2Pin);
+  start_Time_thumb = millis();
+  delay(500);
+  move_motor(true, 255, motorDrivers[1].pwmbPin, motorDrivers[1].bin1Pin, motorDrivers[1].bin2Pin);
+  move_motor(true, 255, motorDrivers[1].pwmaPin, motorDrivers[1].ain1Pin, motorDrivers[1].ain2Pin);
+  move_motor(true, 255, motorDrivers[0].pwmaPin, motorDrivers[0].ain1Pin, motorDrivers[0].ain2Pin);
+  start_Time_finger1 = millis();
+  start_Time_finger2 = millis();
+  start_Time_finger3 = millis();
+
+
+
+  while ((contact_finger1 == false) or (contact_finger2 == false) or (contact_finger3 == false) or (contact_thumb == false)) {
+    fsrValue1 = analogRead(FSR1);
+    fsrValue2 = analogRead(FSR2);
+    fsrValue3 = analogRead(FSR3);
+    fsrValue4 = analogRead(FSR4);
+
+    if (fsrValue4 > fsrThreshold)
+    {
+      
+      if (counter_thumb == 0)
+      {
+        stop_motor(motorDrivers[2].pwmbPin);
+        contact_thumb = true;
+        counter_thumb += 1;
+        stop_Time_thumb = millis();
+      }
+      
+    }
+    
+    if (fsrValue3 > fsrThreshold)
+    {
+      
+      if (counter_finger1 == 0)
+      {
+        stop_motor(motorDrivers[1].pwmbPin);
+        contact_finger1 = true;
+        counter_finger1 +=1;
+        stop_Time_finger1 = millis();
+      }
+    }
+
+    if (fsrValue2 > fsrThreshold)
+    {
+      if (counter_finger2 == 0)
+      {
+        stop_motor(motorDrivers[0].pwmaPin);
+        contact_finger2 = true;
+        counter_finger2 +=1;
+        stop_Time_finger2 = millis();
+      }
+    }
+
+    if (fsrValue1 > fsrThreshold)
+    {
+      if (counter_finger3 == 0)
+      {
+        stop_motor(motorDrivers[1].pwmaPin);
+        contact_finger3 = true;
+        counter_finger3 +=1;
+        stop_Time_finger3 = millis();
+      }
+    }
+
+    
+
+  delay(100);
+  }
+  
+  //calculate the time till contact for each motor
+  elapsedTime_finger1 = stop_Time_finger1 - start_Time_finger1; 
+  elapsedTime_finger2 = stop_Time_finger2 - start_Time_finger2; 
+  elapsedTime_finger3 = stop_Time_finger3 - start_Time_finger3; 
+  elapsedTime_thumb = stop_Time_thumb - start_Time_thumb; 
+
+
+  //set standly for each motor driver high 
+  digitalWrite(motorDrivers[1].standbyPin, LOW);
+  digitalWrite(motorDrivers[0].standbyPin, LOW);
+  digitalWrite(motorDrivers[2].standbyPin, LOW);
+}
+
+void single_finger_grip() {
+  
+  const int fsrThreshold = 50; // set FSR threshold
+  int fsrValue3 = 0; // initialize FSR value to 0
+  int fsrValue4 = 0; // initialize FSR value to 0
+  int counter1 = 0;
+  int counter2 = 0;
+  boolean contact1 = false;
+  boolean contact2 = false;
+  unsigned long startTime1 = 0; // initialize start time to 0
+  unsigned long stopTime1 = 0; // initialize stop time to 0
+  unsigned long startTime2 = 0; // initialize start time to 0
+  unsigned long stopTime2 = 0; // initialize stop time to 0
+  unsigned long elapsedTime1 = 0; // initialize start time to 0
+  unsigned long elapsedTime2 = 0; // initialize stop time to 0
+  int diff_times = 0;
+
+  //set standly for each motor driver high 
+  digitalWrite(motorDrivers[1].standbyPin, HIGH);
+  digitalWrite(motorDrivers[0].standbyPin, HIGH);
+  digitalWrite(motorDrivers[2].standbyPin, HIGH);
+
+  // moves oposable thumb motor to grip position
+  move_motor(true, 80, motorDrivers[0].pwmbPin, motorDrivers[0].bin1Pin, motorDrivers[0].bin2Pin);
+  delay(200);
+  stop_motor(motorDrivers[0].pwmbPin);
+  delay(5000);
+
+  //starts movement of both thumb grip and finger 
+  move_motor(true, 255, motorDrivers[1].pwmbPin, motorDrivers[1].bin1Pin, motorDrivers[1].bin2Pin);
+  startTime1 = millis();
+  move_motor(true, 255, motorDrivers[2].pwmbPin, motorDrivers[2].bin1Pin, motorDrivers[2].bin2Pin);
+  startTime2 = millis();
+
+  while ((contact1 == false) or (contact2 == false)) {
+    fsrValue3 = analogRead(FSR3);
+    fsrValue4 = analogRead(FSR4);
+
+    if (fsrValue4 > 50)
+    {
+      
+      if (counter2 == 0)
+      {
+        stop_motor(motorDrivers[2].pwmbPin);
+        contact2 = true;
+        counter2 += 1;
+        stopTime2 = millis();
+      }
+      
+    }
+    
+    if (fsrValue3 > fsrThreshold)
+    {
+      
+      if (counter1 == 0)
+      {
+        stop_motor(motorDrivers[1].pwmbPin);
+        contact1 = true;
+        counter1 +=1;
+        stopTime1 = millis();
+      }
+    }
+
+    
+
+  delay(100);
+  }
+  
+  //calculate the time till contact for each motor
+  elapsedTime1 = stopTime1 - startTime1; 
+  elapsedTime2 = stopTime2 - startTime2;
+  
+  delay(5000); // delay for grip hold 
+
+  //moves the motors back to their original position
+  move_motor(false, 255, motorDrivers[1].pwmbPin, motorDrivers[1].bin1Pin, motorDrivers[1].bin2Pin);
+  move_motor(false, 255, motorDrivers[2].pwmbPin, motorDrivers[2].bin1Pin, motorDrivers[2].bin2Pin);
+
+  if (elapsedTime1 < elapsedTime2)
+  {
+    delay(elapsedTime1);
+    stop_motor(motorDrivers[1].pwmbPin);
+    diff_times = elapsedTime2-elapsedTime1; // what if same!!!!!!!!!!!!!
+    delay(diff_times);
+    stop_motor(motorDrivers[2].pwmbPin); 
+  }
+  else
+  {
+    delay(elapsedTime2-200);
+    stop_motor(motorDrivers[2].pwmbPin);
+    diff_times = elapsedTime1-elapsedTime2; // what if same!!!!!!!!!!!!!
+    delay(diff_times);
+    stop_motor(motorDrivers[1].pwmbPin); 
+  }
+
+  move_motor(false, 80, motorDrivers[0].pwmbPin, motorDrivers[0].bin1Pin, motorDrivers[0].bin2Pin);
+  delay(200);
+  stop_motor(motorDrivers[0].pwmbPin);
+
+  //set standly for each motor driver high 
+  digitalWrite(motorDrivers[1].standbyPin, LOW);
+  digitalWrite(motorDrivers[0].standbyPin, LOW);
+  digitalWrite(motorDrivers[2].standbyPin, LOW);
+   
+}
+
+// this function can calibrate each finger of the hand to a fully opened starting position
+//it also sets the driection logic of the finger to (closed, in1Pin = HIGH, in2Pin = LOW) 
+void calibrate_finger (int standbyPin, int pwmPin, int in1Pin, int in2Pin, int fsrPin, int calc, int rpm)
+{
+  const int fsrThreshold = 50; // set FSR threshold
+  int fsrValue = 0; // initialize FSR value to 0
+  unsigned long startTime = 0; // initialize start time to 0
+  unsigned long stopTime = 0; // initialize stop time to 0
+
+
+
+  // Activate the motor driver
+  digitalWrite(standbyPin, HIGH);
+
+  // Start moving the motor forward
+  analogWrite(pwmPin, rpm);
+  digitalWrite(in1Pin, LOW);
+  digitalWrite(in2Pin, HIGH);
+
+  // Move the motor until the FSR reading is over the threshold
+  while (fsrValue < fsrThreshold) {
+    fsrValue = analogRead(fsrPin);
+  }
+  fsrValue = 0;
+  // Stop the motor and delay for short period 
+  analogWrite(pwmPin, 0);
+  delay(250);
+
+  //rotate motor in other direction
+  //record start time
+  digitalWrite(in1Pin, HIGH);
+  digitalWrite(in2Pin, LOW);
+  analogWrite(pwmPin, rpm);
+  startTime = millis();
+  
+  //short delay so that FSR doesn't false positive
+  // Move the motor until the FSR reading is over the threshold
+  delay(1000);
+  while (fsrValue < fsrThreshold) {
+    fsrValue = analogRead(fsrPin);
+  }
+
+  //record the new time and calculate the time to move to calibrated strat position
+  stopTime = millis();
+  unsigned long time_to_start = ((stopTime - startTime)/2)-calc;
+  
+  // Stop the motor and delay for short period 
+  analogWrite(pwmPin, 0);
+  delay(250);
+
+  //rotate motor to calibrated strat position
+  digitalWrite(in1Pin, LOW);
+  digitalWrite(in2Pin, HIGH);
+  analogWrite(pwmPin, rpm);
+  delay(time_to_start);
+
+  // Stop the motor and deactivate the motor driver 
+  analogWrite(pwmPin, 0);
+  digitalWrite(standbyPin, LOW);
+}
+
+
+void move_motor(boolean forward, int rpm, int pwm, int direct_1, int direct_2)
+{
+  if (forward == true)
+  {
+    digitalWrite(direct_1, HIGH);
+    digitalWrite(direct_2, LOW);
+    analogWrite(pwm, rpm);
+  }
+  else
+  {
+    digitalWrite(direct_1, LOW);
+    digitalWrite(direct_2, HIGH);
+    analogWrite(pwm, rpm);
+  }
+}
+
+void stop_motor (int pwm)
+{
+  analogWrite(pwm, 0);
+}
